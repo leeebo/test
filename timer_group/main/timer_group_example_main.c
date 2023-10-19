@@ -12,6 +12,7 @@
 #include "freertos/queue.h"
 #include "driver/timer.h"
 #include "driver/gpio.h"
+#include "driver/dedic_gpio.h"
 #include "hal/gpio_hal.h"
 #include "soc/gpio_struct.h"
 #include "driver/dedic_gpio.h"
@@ -20,6 +21,8 @@
 #define TIMER_SCALE           (TIMER_BASE_CLK / TIMER_DIVIDER / 1000000)  // convert counter value to seconds
 #define FLAP_GPIO_NUM         2
 #define FLAP_DEDICATED_GPIO   3
+#define USING_DEDICATED_GPIO  1
+
 static dedic_gpio_bundle_handle_t dedicated_gpio_bundle = NULL;
 
 typedef struct {
@@ -49,9 +52,10 @@ static void inline print_timer_counter(uint64_t counter_value)
 {
     printf("Counter: 0x%08x%08x\r\n", (uint32_t) (counter_value >> 32),
            (uint32_t) (counter_value));
-    printf("Time   : %.8f s\r\n", (double) counter_value / TIMER_SCALE);
+    printf("Time   : %.8f us\r\n", (double) counter_value / TIMER_SCALE);
 }
 
+#if !USING_DEDICATED_GPIO
 static void IRAM_ATTR my_gpio_ll_set_level(uint32_t gpio_num, uint32_t level)
 {
     gpio_dev_t *hw = GPIO_HAL_GET_HW(GPIO_PORT_0);
@@ -67,13 +71,19 @@ static int IRAM_ATTR my_gpio_ll_get_level(uint32_t gpio_num)
     gpio_dev_t *hw = GPIO_HAL_GET_HW(GPIO_PORT_0);
     return (hw->in.data >> gpio_num) & 0x1;
 }
+#endif
 
 static bool IRAM_ATTR timer_group_isr_callback(void *args)
 {
     BaseType_t high_task_awoken = pdFALSE;
     example_timer_info_t *info = (example_timer_info_t *) args;
 
+#if USING_DEDICATED_GPIO
+    uint32_t mask = dedic_gpio_bundle_read_out(dedicated_gpio_bundle);
+    dedic_gpio_bundle_write(dedicated_gpio_bundle, 0x01, mask ^ 1);
+#else
     my_gpio_ll_set_level(FLAP_GPIO_NUM, my_gpio_ll_get_level(FLAP_GPIO_NUM) ^ 1);
+#endif
 
     uint64_t timer_counter_value = timer_group_get_counter_value_in_isr(info->timer_group, info->timer_idx);
 
@@ -140,12 +150,15 @@ static void example_tg_timer_init(int group, int timer, bool auto_reload, bool e
     timer_start(group, timer);
 }
 
+static int trigger_times = 0;
+
 static void timer_example_evt_task(void *arg)
 {
     while (1) {
         example_timer_event_t evt;
         xQueueReceive(s_timer_queue, &evt, portMAX_DELAY);
         printf("\n");
+        ++trigger_times;
         /* Print information that the timer reported an event */
         if (evt.info.auto_reload) {
             printf("Timer Group with auto reload\n");
@@ -170,9 +183,6 @@ void app_main(void)
 {
     s_timer_queue = xQueueCreate(10, sizeof(example_timer_event_t));
 
-    example_tg_timer_init(TIMER_GROUP_0, TIMER_0, true, false, 50);
-    example_tg_timer_init(TIMER_GROUP_1, TIMER_0, true, true, 3000000);
-    xTaskCreate(timer_example_evt_task, "timer_evt_task", 2048, NULL, 5, NULL);
     gpio_config_t io_conf = {
         .intr_type = GPIO_INTR_DISABLE,
         .mode = GPIO_MODE_INPUT_OUTPUT,
@@ -195,12 +205,19 @@ void app_main(void)
         },
     };
     ESP_ERROR_CHECK(dedic_gpio_new_bundle(&bundleA_config, &dedicated_gpio_bundle));
+    dedic_gpio_bundle_write(dedicated_gpio_bundle, 0x01, 0x01);
+    example_tg_timer_init(TIMER_GROUP_0, TIMER_0, true, false, 50);
+    example_tg_timer_init(TIMER_GROUP_1, TIMER_0, true, true, 1000000);
+    xTaskCreate(timer_example_evt_task, "timer_evt_task", 2048, NULL, 5, NULL);
     int count = 0;
     while (1) {
         vTaskDelay(1000 / portTICK_PERIOD_MS);
-        if (++count > 4) {
+        if (++count > 5) {
+            if (trigger_times < 5) {
+                abort();
+            }
             esp_restart();
         }
-        ESP_LOGI("main", "count: %d", count);
+        printf("count: %d, trigger_times: %d\n", count, trigger_times);
     }
 }
