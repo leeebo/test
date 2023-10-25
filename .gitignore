@@ -1,3 +1,5 @@
 build
 sdkconfig
 timer_group/sdkconfig.old
+.vscode
+idf_debug_method/sdkconfig.old
