@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include "esp_log.h"
 #include "driver/i2c.h"
+#include "esp32-hal-i2c-slave.h"
 #include "sdkconfig.h"
 
 static const char *TAG = "i2c-example";
@@ -78,26 +79,32 @@ static esp_err_t i2c_master_init(void)
     return i2c_driver_install(i2c_master_port, conf.mode, I2C_MASTER_RX_BUF_DISABLE, I2C_MASTER_TX_BUF_DISABLE, 0);
 }
 
+esp_err_t i2cSlaveAttachCallbacks(uint8_t num, i2c_slave_request_cb_t request_callback, i2c_slave_receive_cb_t receive_callback, void * arg);
+
+esp_err_t i2cSlaveInit(uint8_t num, int sda, int scl, uint16_t slaveID, uint32_t frequency, size_t rx_len, size_t tx_len);
+esp_err_t i2cSlaveDeinit(uint8_t num);
+size_t i2cSlaveWrite(uint8_t num, const uint8_t *buf, uint32_t len, uint32_t timeout_ms);
+
+typedef void (*i2c_slave_request_cb_t) (uint8_t num, void * arg);
+typedef void (*i2c_slave_receive_cb_t) (uint8_t num, uint8_t * data, size_t len, bool stop, void * arg);
+
+static void i2c_slave_request_cb(uint8_t num, void * arg)
+{
+    ESP_LOGI(TAG, "i2c_slave_request_cb");
+}
+
+static void i2c_slave_receive_cb(uint8_t num, uint8_t * data, size_t len, bool stop, void * arg)
+{
+    ESP_LOGI(TAG, "i2c_slave_receive_cb");
+}
+
 /**
  * @brief i2c slave initialization
  */
 static esp_err_t i2c_slave_init(void)
 {
-    int i2c_slave_port = I2C_SLAVE_NUM;
-    i2c_config_t conf_slave = {
-        .sda_io_num = I2C_SLAVE_SDA_IO,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_io_num = I2C_SLAVE_SCL_IO,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .mode = I2C_MODE_SLAVE,
-        .slave.addr_10bit_en = 0,
-        .slave.slave_addr = ESP_SLAVE_ADDR,
-    };
-    esp_err_t err = i2c_param_config(i2c_slave_port, &conf_slave);
-    if (err != ESP_OK) {
-        return err;
-    }
-    return i2c_driver_install(i2c_slave_port, conf_slave.mode, I2C_SLAVE_RX_BUF_LEN, I2C_SLAVE_TX_BUF_LEN, 0);
+    i2cSlaveAttachCallbacks(I2C_SLAVE_NUM, i2c_slave_request_cb, i2c_slave_receive_cb, NULL);
+    return i2cSlaveInit(I2C_SLAVE_NUM, I2C_SLAVE_SDA_IO, I2C_SLAVE_SCL_IO, ESP_SLAVE_ADDR, I2C_MASTER_FREQ_HZ, I2C_SLAVE_RX_BUF_LEN, I2C_SLAVE_TX_BUF_LEN);
 }
 
 static void i2c_master_task(void *arg)
