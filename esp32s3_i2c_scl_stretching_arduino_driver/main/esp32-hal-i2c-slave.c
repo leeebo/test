@@ -43,9 +43,12 @@
 #include "soc/i2c_struct.h"
 #include "hal/i2c_ll.h"
 #include "hal/clk_gate_ll.h"
-#include "esp32-hal-log.h"
 #include "esp32-hal-i2c-slave.h"
 #include "esp32-hal-periman.h"
+#include "esp_timer.h"
+#include "esp_log.h"
+
+const char* TAG = "i2c_slave";
 
 #define I2C_SLAVE_USE_RX_QUEUE 0 // 1: Queue, 0: RingBuffer
 
@@ -206,7 +209,7 @@ static bool i2cSlaveDetachBus(void * bus_i2c_num);
 
 esp_err_t i2cSlaveAttachCallbacks(uint8_t num, i2c_slave_request_cb_t request_callback, i2c_slave_receive_cb_t receive_callback, void * arg){
     if(num >= SOC_I2C_NUM){
-        log_e("Invalid port num: %u", num);
+        ESP_LOGE(TAG, "Invalid port num: %u", num);
         return ESP_ERR_INVALID_ARG;
     }
     i2c_slave_struct_t * i2c = &_i2c_bus_array[num];
@@ -220,12 +223,12 @@ esp_err_t i2cSlaveAttachCallbacks(uint8_t num, i2c_slave_request_cb_t request_ca
 
 esp_err_t i2cSlaveInit(uint8_t num, int sda, int scl, uint16_t slaveID, uint32_t frequency, size_t rx_len, size_t tx_len) {
     if(num >= SOC_I2C_NUM){
-        log_e("Invalid port num: %u", num);
+        ESP_LOGE(TAG, "Invalid port num: %u", num);
         return ESP_ERR_INVALID_ARG;
     }
 
     if (sda < 0 || scl < 0) {
-        log_e("invalid pins sda=%d, scl=%d", sda, scl);
+        ESP_LOGE(TAG, "invalid pins sda=%d, scl=%d", sda, scl);
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -240,7 +243,7 @@ esp_err_t i2cSlaveInit(uint8_t num, int sda, int scl, uint16_t slaveID, uint32_t
         return false;
     }
 
-    log_i("Initialising I2C Slave: sda=%d scl=%d freq=%d, addr=0x%x", sda, scl, frequency, slaveID);
+    ESP_LOGI(TAG, "Initialising I2C Slave: sda=%d scl=%d freq=%" PRIu32 ", addr=0x%x", sda, scl, frequency, slaveID);
 
     i2c_slave_struct_t * i2c = &_i2c_bus_array[num];
     esp_err_t ret = ESP_OK;
@@ -249,7 +252,7 @@ esp_err_t i2cSlaveInit(uint8_t num, int sda, int scl, uint16_t slaveID, uint32_t
     if(!i2c->lock){
         i2c->lock = xSemaphoreCreateMutex();
         if (i2c->lock == NULL) {
-            log_e("RX queue create failed");
+            ESP_LOGE(TAG, "RX queue create failed");
             return ESP_ERR_NO_MEM;
         }
     }
@@ -261,14 +264,14 @@ esp_err_t i2cSlaveInit(uint8_t num, int sda, int scl, uint16_t slaveID, uint32_t
 #if I2C_SLAVE_USE_RX_QUEUE
     i2c->rx_queue = xQueueCreate(rx_len, sizeof(uint8_t));
     if (i2c->rx_queue == NULL) {
-        log_e("RX queue create failed");
+        ESP_LOGE(TAG, "RX queue create failed");
         ret = ESP_ERR_NO_MEM;
         goto fail;
     }
 #else
     i2c->rx_ring_buf = xRingbufferCreate(rx_len, RINGBUF_TYPE_BYTEBUF);
     if (i2c->rx_ring_buf == NULL) {
-        log_e("RX RingBuf create failed");
+        ESP_LOGE(TAG, "RX RingBuf create failed");
         ret = ESP_ERR_NO_MEM;
         goto fail;
     }
@@ -276,21 +279,21 @@ esp_err_t i2cSlaveInit(uint8_t num, int sda, int scl, uint16_t slaveID, uint32_t
 
     i2c->tx_queue = xQueueCreate(tx_len, sizeof(uint8_t));
     if (i2c->tx_queue == NULL) {
-        log_e("TX queue create failed");
+        ESP_LOGE(TAG, "TX queue create failed");
         ret = ESP_ERR_NO_MEM;
         goto fail;
     }
 
     i2c->event_queue = xQueueCreate(16, sizeof(i2c_slave_queue_event_t));
     if (i2c->event_queue == NULL) {
-        log_e("Event queue create failed");
+        ESP_LOGE(TAG, "Event queue create failed");
         ret = ESP_ERR_NO_MEM;
         goto fail;
     }
 
     xTaskCreate(i2c_slave_task, "i2c_slave_task", 4096, i2c, 20, &i2c->task_handle);
     if(i2c->task_handle == NULL){
-        log_e("Event thread create failed");
+        ESP_LOGE(TAG, "Event thread create failed");
         ret = ESP_ERR_NO_MEM;
         goto fail;
     }
@@ -309,13 +312,12 @@ esp_err_t i2cSlaveInit(uint8_t num, int sda, int scl, uint16_t slaveID, uint32_t
     }
     
     i2c_ll_slave_init(i2c->dev);
-    i2c_ll_set_fifo_mode(i2c->dev, true);
     i2c_ll_set_slave_addr(i2c->dev, slaveID, false);
     i2c_ll_set_tout(i2c->dev, I2C_LL_MAX_TIMEOUT);
     i2c_slave_set_frequency(i2c, frequency);
 
     if (!i2c_slave_check_line_state(sda, scl)) {
-        log_e("bad pin state");
+        ESP_LOGE(TAG, "bad pin state");
         ret = ESP_FAIL;
         goto fail;
     }
@@ -323,14 +325,14 @@ esp_err_t i2cSlaveInit(uint8_t num, int sda, int scl, uint16_t slaveID, uint32_t
     i2c_slave_attach_gpio(i2c, sda, scl);
 
     if (i2c_ll_is_bus_busy(i2c->dev)) {
-        log_w("Bus busy, reinit");
+        ESP_LOGW(TAG, "Bus busy, reinit");
         ret = ESP_FAIL;
         goto fail;
     }
 
     i2c_ll_disable_intr_mask(i2c->dev, I2C_LL_INTR_MASK);
     i2c_ll_clear_intr_mask(i2c->dev, I2C_LL_INTR_MASK);
-    i2c_ll_set_fifo_mode(i2c->dev, true);
+    i2c_ll_slave_set_fifo_mode(i2c->dev, true);
 
     if (!i2c->intr_handle) {
         uint32_t flags = ESP_INTR_FLAG_LOWMED | ESP_INTR_FLAG_SHARED;
@@ -343,7 +345,7 @@ esp_err_t i2cSlaveInit(uint8_t num, int sda, int scl, uint16_t slaveID, uint32_t
         }
 
         if (ret != ESP_OK) {
-            log_e("install interrupt handler Failed=%d", ret);
+            ESP_LOGE(TAG, "install interrupt handler Failed=%d", ret);
             goto fail;
         }
     }
@@ -368,14 +370,14 @@ fail:
 
 esp_err_t i2cSlaveDeinit(uint8_t num){
     if(num >= SOC_I2C_NUM){
-        log_e("Invalid port num: %u", num);
+        ESP_LOGE(TAG, "Invalid port num: %u", num);
         return ESP_ERR_INVALID_ARG;
     }
 
     i2c_slave_struct_t * i2c = &_i2c_bus_array[num];
 #if !CONFIG_DISABLE_HAL_LOCKS
     if(!i2c->lock){
-        log_e("Lock is not initialized! Did you call i2c_slave_init()?");
+        ESP_LOGE(TAG, "Lock is not initialized! Did you call i2c_slave_init()?");
         return ESP_ERR_NO_MEM;
     }
 #endif
@@ -391,14 +393,14 @@ esp_err_t i2cSlaveDeinit(uint8_t num){
 
 size_t i2cSlaveWrite(uint8_t num, const uint8_t *buf, uint32_t len, uint32_t timeout_ms) {
     if(num >= SOC_I2C_NUM){
-        log_e("Invalid port num: %u", num);
+        ESP_LOGE(TAG, "Invalid port num: %u", num);
         return 0;
     }
     uint32_t to_queue = 0, to_fifo = 0;
     i2c_slave_struct_t * i2c = &_i2c_bus_array[num];
 #if !CONFIG_DISABLE_HAL_LOCKS
     if(!i2c->lock){
-        log_e("Lock is not initialized! Did you call i2c_slave_init()?");
+        ESP_LOGE(TAG, "Lock is not initialized! Did you call i2c_slave_init()?");
         return ESP_ERR_NO_MEM;
     }
 #endif
@@ -495,7 +497,7 @@ static void i2c_slave_free_resources(i2c_slave_struct_t * i2c){
 static bool i2c_slave_set_frequency(i2c_slave_struct_t * i2c, uint32_t clk_speed)
 {
     if (i2c == NULL) {
-        log_e("no control buffer");
+        ESP_LOGE(TAG, "no control buffer");
         return false;
     }
     if(clk_speed > 1100000UL){
@@ -504,7 +506,7 @@ static bool i2c_slave_set_frequency(i2c_slave_struct_t * i2c, uint32_t clk_speed
 
     // Adjust Fifo thresholds based on frequency
     uint32_t a = (clk_speed / 50000L) + 2;
-    log_d("Fifo thresholds: rx_fifo_full = %d, tx_fifo_empty = %d", SOC_I2C_FIFO_LEN - a, a);
+    ESP_LOGD(TAG, "Fifo thresholds: rx_fifo_full = %" PRIu32 ", tx_fifo_empty = %" PRIu32, SOC_I2C_FIFO_LEN - a, a);
 
     i2c_hal_clk_config_t clk_cal;
 #if SOC_I2C_SUPPORT_APB
@@ -558,11 +560,11 @@ static bool i2c_slave_check_line_state(int8_t sda, int8_t scl)
     gpio_set_level(scl, 1);
 
     if (!gpio_get_level(sda) || !gpio_get_level(scl)) { // bus in busy state
-        log_w("invalid state sda(%d)=%d, scl(%d)=%d", sda, gpio_get_level(sda), scl, gpio_get_level(scl));
+        ESP_LOGW(TAG, "invalid state sda(%d)=%d, scl(%d)=%d", sda, gpio_get_level(sda), scl, gpio_get_level(scl));
         for (uint8_t a=0; a<9; a++) {
             i2c_slave_delay_us(5);
             if (gpio_get_level(sda) && gpio_get_level(scl)) { // bus recovered
-                log_w("Recovered after %d Cycles",a);
+                ESP_LOGW(TAG, "Recovered after %d Cycles",a);
                 gpio_set_level(sda,0); // start
                 i2c_slave_delay_us(5);
                 for (uint8_t a=0;a<9; a++) {
@@ -583,7 +585,7 @@ static bool i2c_slave_check_line_state(int8_t sda, int8_t scl)
     }
 
     if (!gpio_get_level(sda) || !gpio_get_level(scl)) { // bus in busy state
-        log_e("Bus Invalid State, Can't init sda=%d, scl=%d",gpio_get_level(sda),gpio_get_level(scl));
+        ESP_LOGE(TAG, "Bus Invalid State, Can't init sda=%d, scl=%d",gpio_get_level(sda),gpio_get_level(scl));
         return false; // bus is busy
     }
     return true;
@@ -592,12 +594,12 @@ static bool i2c_slave_check_line_state(int8_t sda, int8_t scl)
 static bool i2c_slave_attach_gpio(i2c_slave_struct_t * i2c, int8_t sda, int8_t scl)
 {
     if (i2c == NULL) {
-        log_e("no control block");
+        ESP_LOGE(TAG, "no control block");
         return false;
     }
     
     if ((sda < 0)||( scl < 0)) {
-        log_e("bad pins sda=%d, scl=%d",sda,scl);
+        ESP_LOGE(TAG, "bad pins sda=%d, scl=%d",sda,scl);
         return false;
     }
 
@@ -619,7 +621,7 @@ static bool i2c_slave_attach_gpio(i2c_slave_struct_t * i2c, int8_t sda, int8_t s
 static bool i2c_slave_detach_gpio(i2c_slave_struct_t * i2c)
 {
     if (i2c == NULL) {
-        log_e("no control Block");
+        ESP_LOGE(TAG, "no control Block");
         return false;
     }
     if (i2c->scl >= 0) {
@@ -642,7 +644,7 @@ static bool i2c_slave_send_event(i2c_slave_struct_t * i2c, i2c_slave_queue_event
     bool pxHigherPriorityTaskWoken = false;
     if(i2c->event_queue) {
         if(xQueueSendFromISR(i2c->event_queue, event, (BaseType_t * const)&pxHigherPriorityTaskWoken) != pdTRUE){
-            //log_e("event_queue_full");
+            //ESP_LOGE(TAG, "event_queue_full");
         }
     }
     return pxHigherPriorityTaskWoken;
@@ -677,7 +679,7 @@ static bool i2c_slave_handle_rx_fifo_full(i2c_slave_struct_t * i2c, uint32_t len
     while (len > 0) {
         i2c_ll_read_rxfifo(i2c->dev, (uint8_t*)&d, 1);
         if(xQueueSendFromISR(i2c->rx_queue, &d, (BaseType_t * const)&pxHigherPriorityTaskWoken) != pdTRUE){
-            log_e("rx_queue_full");
+            ESP_LOGE(TAG, "rx_queue_full");
         } else {
             i2c->rx_data_count++;
         }
@@ -688,7 +690,7 @@ static bool i2c_slave_handle_rx_fifo_full(i2c_slave_struct_t * i2c, uint32_t len
     if(len){
         i2c_ll_read_rxfifo(i2c->dev, data, len);
         if(xRingbufferSendFromISR(i2c->rx_ring_buf, (void*) data, len, (BaseType_t * const)&pxHigherPriorityTaskWoken) != pdTRUE){
-            log_e("rx_ring_buf_full");
+            ESP_LOGE(TAG, "rx_ring_buf_full");
         } else {
             i2c->rx_data_count += len;
         }
@@ -791,7 +793,7 @@ static size_t i2c_slave_read_rx(i2c_slave_struct_t * i2c, uint8_t * data, size_t
             res = xQueueReceive(i2c->rx_queue, &d, 0);
         }
         if (res != pdTRUE) {
-            log_e("Read Queue(%u) Failed", i);
+            ESP_LOGE(TAG, "Read Queue(%u) Failed", i);
             len = i;
             break;
         }
@@ -806,7 +808,7 @@ static size_t i2c_slave_read_rx(i2c_slave_struct_t * i2c, uint8_t * data, size_t
 
     vRingbufferGetInfo(i2c->rx_ring_buf, NULL, NULL, NULL, NULL, &available);
     if(available < to_read){
-        log_e("Less available than requested. %u < %u", available, len);
+        ESP_LOGE(TAG, "Less available than requested. %u < %u", available, len);
         to_read = available;
     }
 
@@ -814,7 +816,7 @@ static size_t i2c_slave_read_rx(i2c_slave_struct_t * i2c, uint8_t * data, size_t
         dlen = 0;
         rx_data = (uint8_t *)xRingbufferReceiveUpTo(i2c->rx_ring_buf, &dlen, 0, to_read);
         if(!rx_data){
-            log_e("Receive %u Failed", to_read);
+            ESP_LOGE(TAG, "Receive %u Failed", to_read);
             return so_far;
         }
         if(data){
@@ -844,7 +846,7 @@ static void i2c_slave_task(void *pv_args)
                 data = (len > 0)?(uint8_t*)malloc(len):NULL;
 
                 if(len && data == NULL){
-                    log_e("Malloc (%u) Failed", len);
+                    ESP_LOGE(TAG, "Malloc (%u) Failed", len);
                 }
                 len = i2c_slave_read_rx(i2c, data, len);
                 if(i2c->receive_callback){
@@ -872,7 +874,7 @@ static bool i2cSlaveDetachBus(void * bus_i2c_num){
     }
     esp_err_t err = i2cSlaveDeinit(num);
     if(err != ESP_OK){
-        log_e("i2cSlaveDeinit failed with error: %d", err);
+        ESP_LOGE(TAG, "i2cSlaveDeinit failed with error: %d", err);
         return false;
     }
     return true;

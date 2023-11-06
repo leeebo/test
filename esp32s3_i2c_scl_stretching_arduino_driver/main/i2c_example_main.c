@@ -79,14 +79,11 @@ static esp_err_t i2c_master_init(void)
     return i2c_driver_install(i2c_master_port, conf.mode, I2C_MASTER_RX_BUF_DISABLE, I2C_MASTER_TX_BUF_DISABLE, 0);
 }
 
-esp_err_t i2cSlaveAttachCallbacks(uint8_t num, i2c_slave_request_cb_t request_callback, i2c_slave_receive_cb_t receive_callback, void * arg);
 
-esp_err_t i2cSlaveInit(uint8_t num, int sda, int scl, uint16_t slaveID, uint32_t frequency, size_t rx_len, size_t tx_len);
-esp_err_t i2cSlaveDeinit(uint8_t num);
-size_t i2cSlaveWrite(uint8_t num, const uint8_t *buf, uint32_t len, uint32_t timeout_ms);
+//size_t i2cSlaveWrite(uint8_t num, const uint8_t *buf, uint32_t len, uint32_t timeout_ms);
 
-typedef void (*i2c_slave_request_cb_t) (uint8_t num, void * arg);
-typedef void (*i2c_slave_receive_cb_t) (uint8_t num, uint8_t * data, size_t len, bool stop, void * arg);
+//typedef void (*i2c_slave_request_cb_t) (uint8_t num, void * arg);
+//typedef void (*i2c_slave_receive_cb_t) (uint8_t num, uint8_t * data, size_t len, bool stop, void * arg);
 
 static void i2c_slave_request_cb(uint8_t num, void * arg)
 {
@@ -95,7 +92,7 @@ static void i2c_slave_request_cb(uint8_t num, void * arg)
 
 static void i2c_slave_receive_cb(uint8_t num, uint8_t * data, size_t len, bool stop, void * arg)
 {
-    ESP_LOGI(TAG, "i2c_slave_receive_cb");
+    ESP_LOG_BUFFER_HEXDUMP(TAG, data, len, ESP_LOG_INFO);
 }
 
 /**
