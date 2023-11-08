@@ -43,6 +43,7 @@
 #include "soc/i2c_struct.h"
 #include "hal/i2c_ll.h"
 #include "hal/clk_gate_ll.h"
+#include "driver/gpio.h"
 #include "esp32-hal-i2c-slave.h"
 #include "esp32-hal-periman.h"
 #include "esp_timer.h"
@@ -63,6 +64,12 @@ const char* TAG = "i2c_slave";
 #if CONFIG_IDF_TARGET_ESP32
     #define I2C_TXFIFO_WM_INT_ENA    I2C_TXFIFO_EMPTY_INT_ENA
     #define I2C_RXFIFO_WM_INT_ENA     I2C_RXFIFO_FULL_INT_ENA
+#endif
+
+#define DEBUG_MODE
+#ifdef DEBUG_MODE
+#define DEBUG_IO 8
+#define DEBUG_IO2 9
 #endif
 
 enum {
@@ -222,6 +229,20 @@ esp_err_t i2cSlaveAttachCallbacks(uint8_t num, i2c_slave_request_cb_t request_ca
 }
 
 esp_err_t i2cSlaveInit(uint8_t num, int sda, int scl, uint16_t slaveID, uint32_t frequency, size_t rx_len, size_t tx_len) {
+
+#ifdef DEBUG_MODE
+    gpio_config_t conf = {
+        .pin_bit_mask = 1LL << DEBUG_IO | 1LL << DEBUG_IO2,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+    gpio_config(&conf);
+    gpio_set_level(DEBUG_IO, 0);
+    gpio_set_level(DEBUG_IO2, 0);
+#endif
+
     if(num >= SOC_I2C_NUM){
         ESP_LOGE(TAG, "Invalid port num: %u", num);
         return ESP_ERR_INVALID_ARG;
@@ -510,16 +531,16 @@ static bool i2c_slave_set_frequency(i2c_slave_struct_t * i2c, uint32_t clk_speed
 
     i2c_hal_clk_config_t clk_cal;
 #if SOC_I2C_SUPPORT_APB
-    i2c_ll_cal_bus_clk(APB_CLK_FREQ, clk_speed, &clk_cal);
+    i2c_ll_master_cal_bus_clk(APB_CLK_FREQ, clk_speed, &clk_cal);
     i2c_ll_set_source_clk(i2c->dev, SOC_MOD_CLK_APB);            /*!< I2C source clock from APB, 80M*/
 #elif SOC_I2C_SUPPORT_XTAL
-    i2c_ll_cal_bus_clk(XTAL_CLK_FREQ, clk_speed, &clk_cal);
+    i2c_ll_master_cal_bus_clk(XTAL_CLK_FREQ, clk_speed, &clk_cal);
     i2c_ll_set_source_clk(i2c->dev, SOC_MOD_CLK_XTAL);           /*!< I2C source clock from XTAL, 40M */
 #endif
     i2c_ll_set_txfifo_empty_thr(i2c->dev, a);
     i2c_ll_set_rxfifo_full_thr(i2c->dev, SOC_I2C_FIFO_LEN - a);
-    i2c_ll_set_bus_timing(i2c->dev, &clk_cal);
-    i2c_ll_set_filter(i2c->dev, 3);
+    i2c_ll_master_set_bus_timing(i2c->dev, &clk_cal);
+    i2c_ll_master_set_filter(i2c->dev, 3);
     return true;
 }
 
@@ -757,6 +778,11 @@ static void i2c_slave_isr_handler(void* arg)
             }
             //SEND TX Event
             i2c_slave_queue_event_t event;
+            if (i2c->rx_data_count) {
+                event.param = i2c->rx_data_count;
+            } else {
+                event.param = 0;
+            }
             event.event = I2C_SLAVE_EVT_TX;
             pxHigherPriorityTaskWoken |= i2c_slave_send_event(i2c, &event);
             //will clear after execution
@@ -850,14 +876,30 @@ static void i2c_slave_task(void *pv_args)
                 }
                 len = i2c_slave_read_rx(i2c, data, len);
                 if(i2c->receive_callback){
+                #ifdef DEBUG_MODE
+                    gpio_set_level(DEBUG_IO, 1);
+                #endif
                     i2c->receive_callback(i2c->num, data, len, stop, i2c->arg);
+                #ifdef DEBUG_MODE
+                    gpio_set_level(DEBUG_IO, 0);
+                #endif
                 }
                 free(data);
 
             // Read
             } else if(event.event == I2C_SLAVE_EVT_TX){
                 if(i2c->request_callback){
-                    i2c->request_callback(i2c->num, i2c->arg);
+                    len = event.param;
+                    data = (len > 0)?(uint8_t*)malloc(len):NULL;
+                    len = i2c_slave_read_rx(i2c, data, len);
+                #ifdef DEBUG_MODE
+                    gpio_set_level(DEBUG_IO2, 1);
+                #endif
+                    i2c->request_callback(i2c->num, data, len, i2c->arg);
+                #ifdef DEBUG_MODE
+                    gpio_set_level(DEBUG_IO2, 0);
+                #endif
+                    free(data);
                 }
                 i2c_ll_stretch_clr(i2c->dev);
             }

@@ -25,7 +25,7 @@ extern "C" {
 #include "stddef.h"
 #include "esp_err.h"
 
-typedef void (*i2c_slave_request_cb_t) (uint8_t num, void * arg);
+typedef void (*i2c_slave_request_cb_t) (uint8_t num, uint8_t *cmd, uint8_t cmd_len, void * arg);
 typedef void (*i2c_slave_receive_cb_t) (uint8_t num, uint8_t * data, size_t len, bool stop, void * arg);
 esp_err_t i2cSlaveAttachCallbacks(uint8_t num, i2c_slave_request_cb_t request_callback, i2c_slave_receive_cb_t receive_callback, void * arg);
 

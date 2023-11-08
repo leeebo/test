@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "esp32-hal-log.h"
+#include "esp_log.h"
 #include "esp32-hal-periman.h"
 #include "esp_bit_defs.h"
 
@@ -15,6 +15,7 @@ typedef struct {
 
 static peripheral_bus_deinit_cb_t deinit_functions[ESP32_BUS_TYPE_MAX];
 static peripheral_pin_item_t pins[SOC_GPIO_PIN_COUNT];
+static const char *TAG = "periman";
 
 #define GPIO_NOT_VALID(p) ((p >= SOC_GPIO_PIN_COUNT) || ((SOC_GPIO_VALID_GPIO_MASK & (1ULL << p)) == 0))
 
@@ -22,36 +23,36 @@ bool perimanSetPinBus(uint8_t pin, peripheral_bus_type_t type, void * bus){
 	peripheral_bus_type_t otype = ESP32_BUS_TYPE_INIT;
 	void * obus = NULL;
 	if(GPIO_NOT_VALID(pin)){
-		log_e("Invalid pin: %u", pin);
+		ESP_LOGE(TAG, "Invalid pin: %u", pin);
 		return false;
 	}
 	if(type >= ESP32_BUS_TYPE_MAX){
-		log_e("Invalid type: %u", (unsigned int)type);
+		ESP_LOGE(TAG, "Invalid type: %u", (unsigned int)type);
 		return false;
 	}
 	if(type > ESP32_BUS_TYPE_GPIO && bus == NULL){
-		log_e("Bus is NULL");
+		ESP_LOGE(TAG, "Bus is NULL");
 		return false;
 	}
 	if (type == ESP32_BUS_TYPE_INIT && bus != NULL){
-		log_e("Can't set a Bus to INIT Type");
+		ESP_LOGE(TAG, "Can't set a Bus to INIT Type");
 		return false;
 	}	
 	otype = pins[pin].type;
 	obus = pins[pin].bus;
 	if(type == otype && bus == obus){
 		if (type != ESP32_BUS_TYPE_INIT) {
-		        log_i("Bus already set");
+		        ESP_LOGI(TAG, "Bus already set");
 		}
 		return true;
 	}
 	if(obus != NULL){
 		if(deinit_functions[otype] == NULL){
-			log_e("Bus does not have deinit function set");
+			ESP_LOGE(TAG, "Bus does not have deinit function set");
 			return false;
 		}
 		if(!deinit_functions[otype](obus)){
-			log_e("Previous bus failed to deinit");
+			ESP_LOGE(TAG, "Previous bus failed to deinit");
 			return false;
 		}
 	}
@@ -62,11 +63,11 @@ bool perimanSetPinBus(uint8_t pin, peripheral_bus_type_t type, void * bus){
 
 void * perimanGetPinBus(uint8_t pin, peripheral_bus_type_t type){
 	if(GPIO_NOT_VALID(pin)){
-		log_e("Invalid pin: %u", pin);
+		ESP_LOGE(TAG, "Invalid pin: %u", pin);
 		return NULL;
 	}
 	if(type >= ESP32_BUS_TYPE_MAX  || type  == ESP32_BUS_TYPE_INIT){
-		log_e("Invalid type: %u", (unsigned int)type);
+		ESP_LOGE(TAG, "Invalid type: %u", (unsigned int)type);
 		return NULL;
 	}
 	if(pins[pin].type == type){
@@ -77,7 +78,7 @@ void * perimanGetPinBus(uint8_t pin, peripheral_bus_type_t type){
 
 peripheral_bus_type_t perimanGetPinBusType(uint8_t pin){
 	if(GPIO_NOT_VALID(pin)){
-		log_e("Invalid pin: %u", pin);
+		ESP_LOGE(TAG, "Invalid pin: %u", pin);
 		return ESP32_BUS_TYPE_MAX;
 	}
 	return pins[pin].type;
@@ -85,11 +86,11 @@ peripheral_bus_type_t perimanGetPinBusType(uint8_t pin){
 
 bool perimanSetBusDeinit(peripheral_bus_type_t type, peripheral_bus_deinit_cb_t cb){
 	if(type >= ESP32_BUS_TYPE_MAX || type == ESP32_BUS_TYPE_INIT){
-		log_e("Invalid type: %u", (unsigned int)type);
+		ESP_LOGE(TAG, "Invalid type: %u", (unsigned int)type);
 		return false;
 	}
 	if(cb == NULL){
-		log_e("Callback is NULL");
+		ESP_LOGE(TAG, "Callback is NULL");
 		return false;
 	}
 	deinit_functions[type] = cb;

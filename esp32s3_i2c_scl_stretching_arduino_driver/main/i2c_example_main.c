@@ -79,15 +79,12 @@ static esp_err_t i2c_master_init(void)
     return i2c_driver_install(i2c_master_port, conf.mode, I2C_MASTER_RX_BUF_DISABLE, I2C_MASTER_TX_BUF_DISABLE, 0);
 }
 
-
-//size_t i2cSlaveWrite(uint8_t num, const uint8_t *buf, uint32_t len, uint32_t timeout_ms);
-
-//typedef void (*i2c_slave_request_cb_t) (uint8_t num, void * arg);
-//typedef void (*i2c_slave_receive_cb_t) (uint8_t num, uint8_t * data, size_t len, bool stop, void * arg);
-
-static void i2c_slave_request_cb(uint8_t num, void * arg)
+static void i2c_slave_request_cb(uint8_t num, uint8_t *cmd, uint8_t cmd_len, void * arg)
 {
-    ESP_LOGI(TAG, "i2c_slave_request_cb");
+    if (cmd_len > 0) {
+        ESP_LOGI(TAG, "cmd: %02x ...", cmd[0]);
+    }
+    i2cSlaveWrite(I2C_SLAVE_NUM, cmd, cmd_len, 0);
 }
 
 static void i2c_slave_receive_cb(uint8_t num, uint8_t * data, size_t len, bool stop, void * arg)
@@ -117,24 +114,9 @@ static void i2c_master_task(void *arg)
     vTaskDelete(NULL);
 }
 
-static void i2c_slave_task(void *arg)
-{
-    uint8_t data[1] = {0};
-    while (1) {
-        size_t size = i2c_slave_read_buffer(I2C_SLAVE_NUM, data, 1, portMAX_DELAY);
-        size_t d_size = 0;
-        if (size > 0) {
-            d_size = i2c_slave_write_buffer(I2C_SLAVE_NUM, data, 1, portMAX_DELAY);
-            ESP_LOGI(TAG, "Slave Read: %02x, Write(%d): %02x\n", data[0], d_size, data[0]);
-        }
-    }
-    vTaskDelete(NULL);
-}
-
 void app_main(void)
 {
     ESP_ERROR_CHECK(i2c_slave_init());
     ESP_ERROR_CHECK(i2c_master_init());
-    xTaskCreate(i2c_master_task, "i2c_master_task", 1024 * 2, NULL, 1, NULL);
-    xTaskCreate(i2c_slave_task, "i2c_test_task_1", 1024 * 2, NULL, 0, NULL);
+    xTaskCreate(i2c_master_task, "i2c_master_task", 1024 * 4, NULL, 1, NULL);
 }
