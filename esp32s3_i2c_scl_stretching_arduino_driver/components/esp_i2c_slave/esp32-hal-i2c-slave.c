@@ -1,4 +1,4 @@
-// Copyright 2015-2021 Espressif Systems (Shanghai) PTE LTD
+// Copyright 2022-2023 Espressif Systems (Shanghai) PTE LTD
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,8 +13,6 @@
 // limitations under the License.
 
 #include "soc/soc_caps.h"
-
-#if SOC_I2C_SUPPORT_SLAVE
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -45,7 +43,6 @@
 #include "hal/clk_gate_ll.h"
 #include "driver/gpio.h"
 #include "esp32-hal-i2c-slave.h"
-#include "esp32-hal-periman.h"
 #include "esp_timer.h"
 #include "esp_log.h"
 
@@ -66,7 +63,7 @@ const char* TAG = "i2c_slave";
     #define I2C_RXFIFO_WM_INT_ENA     I2C_RXFIFO_FULL_INT_ENA
 #endif
 
-#define DEBUG_MODE
+//#define DEBUG_MODE
 #ifdef DEBUG_MODE
 #define DEBUG_IO 8
 #define DEBUG_IO2 9
@@ -75,6 +72,17 @@ const char* TAG = "i2c_slave";
 enum {
     I2C_SLAVE_EVT_RX, I2C_SLAVE_EVT_TX
 };
+
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+#define i2c_ll_set_filter i2c_ll_master_set_filter
+#define i2c_ll_cal_bus_clk i2c_ll_master_cal_bus_clk
+#define i2c_ll_set_bus_timing i2c_ll_master_set_bus_timing
+#define i2c_ll_set_fifo_mode i2c_ll_slave_set_fifo_mode
+#define i2c_ll_clr_intsts_mask i2c_ll_clear_intr_mask 
+#define i2c_clk_cal_t i2c_hal_clk_config_t
+#define I2C_SCLK_APB SOC_MOD_CLK_APB
+#define I2C_SCLK_XTAL SOC_MOD_CLK_XTAL
+#endif
 
 typedef struct i2c_slave_struct_t {
     i2c_dev_t * dev;
@@ -208,7 +216,6 @@ static bool i2c_slave_handle_rx_fifo_full(i2c_slave_struct_t * i2c, uint32_t len
 static size_t i2c_slave_read_rx(i2c_slave_struct_t * i2c, uint8_t * data, size_t len);
 static void i2c_slave_isr_handler(void* arg);
 static void i2c_slave_task(void *pv_args);
-static bool i2cSlaveDetachBus(void * bus_i2c_num);
 
 //=====================================================================================================================
 //-------------------------------------- Public Functions -------------------------------------------------------------
@@ -257,11 +264,6 @@ esp_err_t i2cSlaveInit(uint8_t num, int sda, int scl, uint16_t slaveID, uint32_t
         frequency = 100000;
     } else if(frequency > 1000000){
         frequency = 1000000;
-    }
-
-    perimanSetBusDeinit(ESP32_BUS_TYPE_I2C_SLAVE, i2cSlaveDetachBus);
-    if(!perimanSetPinBus(sda, ESP32_BUS_TYPE_INIT, NULL) || !perimanSetPinBus(scl, ESP32_BUS_TYPE_INIT, NULL)){
-        return false;
     }
 
     ESP_LOGI(TAG, "Initialising I2C Slave: sda=%d scl=%d freq=%" PRIu32 ", addr=0x%x", sda, scl, frequency, slaveID);
@@ -352,8 +354,8 @@ esp_err_t i2cSlaveInit(uint8_t num, int sda, int scl, uint16_t slaveID, uint32_t
     }
 
     i2c_ll_disable_intr_mask(i2c->dev, I2C_LL_INTR_MASK);
-    i2c_ll_clear_intr_mask(i2c->dev, I2C_LL_INTR_MASK);
-    i2c_ll_slave_set_fifo_mode(i2c->dev, true);
+    i2c_ll_clr_intsts_mask(i2c->dev, I2C_LL_INTR_MASK);
+    i2c_ll_set_fifo_mode(i2c->dev, true);
 
     if (!i2c->intr_handle) {
         uint32_t flags = ESP_INTR_FLAG_LOWMED | ESP_INTR_FLAG_SHARED;
@@ -376,10 +378,6 @@ esp_err_t i2cSlaveInit(uint8_t num, int sda, int scl, uint16_t slaveID, uint32_t
     i2c_ll_slave_enable_rx_it(i2c->dev);
     i2c_ll_set_stretch(i2c->dev, 0x3FF);
     i2c_ll_update(i2c->dev);
-    if(!perimanSetPinBus(sda, ESP32_BUS_TYPE_I2C_SLAVE, (void *)(i2c->num+1)) || !perimanSetPinBus(scl, ESP32_BUS_TYPE_I2C_SLAVE, (void *)(i2c->num+1))){
-        i2cSlaveDetachBus((void *)(i2c->num+1));
-        ret = ESP_FAIL;
-    }
     I2C_SLAVE_MUTEX_UNLOCK();
     return ret;
 
@@ -403,11 +401,7 @@ esp_err_t i2cSlaveDeinit(uint8_t num){
     }
 #endif
     I2C_SLAVE_MUTEX_LOCK();
-    int scl = i2c->scl;
-    int sda = i2c->sda;
     i2c_slave_free_resources(i2c);
-    perimanSetPinBus(scl, ESP32_BUS_TYPE_INIT, NULL);
-    perimanSetPinBus(sda, ESP32_BUS_TYPE_INIT, NULL);
     I2C_SLAVE_MUTEX_UNLOCK();
     return ESP_OK;
 }
@@ -432,12 +426,22 @@ size_t i2cSlaveWrite(uint8_t num, const uint8_t *buf, uint32_t len, uint32_t tim
 #if CONFIG_IDF_TARGET_ESP32
     i2c_ll_slave_disable_tx_it(i2c->dev);
     uint32_t txfifo_len = 0;
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
     i2c_ll_get_txfifo_len(i2c->dev, &txfifo_len);
+#else
+    txfifo_len = i2c_ll_get_txfifo_len(i2c->dev);
+#endif
     if (txfifo_len < SOC_I2C_FIFO_LEN) {
         i2c_ll_txfifo_rst(i2c->dev);
     }
 #endif
+
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
     i2c_ll_get_txfifo_len(i2c->dev, &to_fifo);
+#else
+    to_fifo = i2c_ll_get_txfifo_len(i2c->dev);
+#endif
+
     if(to_fifo){
         if(len < to_fifo){
             to_fifo = len;
@@ -478,7 +482,7 @@ static void i2c_slave_free_resources(i2c_slave_struct_t * i2c){
     i2c_slave_detach_gpio(i2c);
     i2c_ll_set_slave_addr(i2c->dev, 0, false);
     i2c_ll_disable_intr_mask(i2c->dev, I2C_LL_INTR_MASK);
-    i2c_ll_clear_intr_mask(i2c->dev, I2C_LL_INTR_MASK);
+    i2c_ll_clr_intsts_mask(i2c->dev, I2C_LL_INTR_MASK);
 
     if (i2c->intr_handle) {
         esp_intr_free(i2c->intr_handle);
@@ -529,18 +533,18 @@ static bool i2c_slave_set_frequency(i2c_slave_struct_t * i2c, uint32_t clk_speed
     uint32_t a = (clk_speed / 50000L) + 2;
     ESP_LOGD(TAG, "Fifo thresholds: rx_fifo_full = %" PRIu32 ", tx_fifo_empty = %" PRIu32, SOC_I2C_FIFO_LEN - a, a);
 
-    i2c_hal_clk_config_t clk_cal;
+    i2c_clk_cal_t clk_cal;
 #if SOC_I2C_SUPPORT_APB
-    i2c_ll_master_cal_bus_clk(APB_CLK_FREQ, clk_speed, &clk_cal);
-    i2c_ll_set_source_clk(i2c->dev, SOC_MOD_CLK_APB);            /*!< I2C source clock from APB, 80M*/
+    i2c_ll_cal_bus_clk(APB_CLK_FREQ, clk_speed, &clk_cal);
+    i2c_ll_set_source_clk(i2c->dev, I2C_SCLK_APB);            /*!< I2C source clock from APB, 80M*/
 #elif SOC_I2C_SUPPORT_XTAL
-    i2c_ll_master_cal_bus_clk(XTAL_CLK_FREQ, clk_speed, &clk_cal);
-    i2c_ll_set_source_clk(i2c->dev, SOC_MOD_CLK_XTAL);           /*!< I2C source clock from XTAL, 40M */
+    i2c_ll_cal_bus_clk(XTAL_CLK_FREQ, clk_speed, &clk_cal);
+    i2c_ll_set_source_clk(i2c->dev, I2C_SCLK_XTAL);           /*!< I2C source clock from XTAL, 40M */
 #endif
     i2c_ll_set_txfifo_empty_thr(i2c->dev, a);
     i2c_ll_set_rxfifo_full_thr(i2c->dev, SOC_I2C_FIFO_LEN - a);
-    i2c_ll_master_set_bus_timing(i2c->dev, &clk_cal);
-    i2c_ll_master_set_filter(i2c->dev, 3);
+    i2c_ll_set_bus_timing(i2c->dev, &clk_cal);
+    i2c_ll_set_filter(i2c->dev, 3);
     return true;
 }
 
@@ -675,7 +679,11 @@ static bool i2c_slave_handle_tx_fifo_empty(i2c_slave_struct_t * i2c)
 {
     bool pxHigherPriorityTaskWoken = false;
     uint32_t d = 0, moveCnt = 0;
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
     i2c_ll_get_txfifo_len(i2c->dev, &moveCnt);
+#else
+    moveCnt = i2c_ll_get_txfifo_len(i2c->dev);
+#endif
     while (moveCnt > 0) { // read tx queue until Fifo is full or queue is empty
         if(xQueueReceiveFromISR(i2c->tx_queue, &d, (BaseType_t * const)&pxHigherPriorityTaskWoken) == pdTRUE){
             i2c_ll_write_txfifo(i2c->dev, (uint8_t*)&d, 1);
@@ -705,7 +713,11 @@ static bool i2c_slave_handle_rx_fifo_full(i2c_slave_struct_t * i2c, uint32_t len
             i2c->rx_data_count++;
         }
         if (--len == 0) {
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+            i2c_ll_get_rxfifo_cnt(i2c->dev, &len);
+#else
             len = i2c_ll_get_rxfifo_cnt(i2c->dev);
+#endif
         }
 #else
     if(len){
@@ -726,10 +738,16 @@ static void i2c_slave_isr_handler(void* arg)
     i2c_slave_struct_t * i2c = (i2c_slave_struct_t *) arg; // recover data
 
     uint32_t activeInt = 0;
-    i2c_ll_get_intr_mask(i2c->dev, &activeInt);
-    i2c_ll_clear_intr_mask(i2c->dev, activeInt);
     uint32_t rx_fifo_len = 0;
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+    i2c_ll_get_intr_mask(i2c->dev, &activeInt);
+    i2c_ll_clr_intsts_mask(i2c->dev, activeInt);
     i2c_ll_get_rxfifo_cnt(i2c->dev, &rx_fifo_len);
+#else
+    activeInt = i2c_ll_get_intsts_mask(i2c->dev);
+    i2c_ll_clr_intsts_mask(i2c->dev, activeInt);
+    rx_fifo_len = i2c_ll_get_rxfifo_cnt(i2c->dev);
+#endif
     bool slave_rw = i2c_ll_slave_rw(i2c->dev);
 
     if(activeInt & I2C_RXFIFO_WM_INT_ENA){ // RX FiFo Full
@@ -785,6 +803,7 @@ static void i2c_slave_isr_handler(void* arg)
             }
             event.event = I2C_SLAVE_EVT_TX;
             pxHigherPriorityTaskWoken |= i2c_slave_send_event(i2c, &event);
+            i2c->rx_data_count = 0;
             //will clear after execution
         } else if(cause == I2C_STRETCH_CAUSE_TX_FIFO_EMPTY){
             pxHigherPriorityTaskWoken |= i2c_slave_handle_tx_fifo_empty(i2c);
@@ -888,7 +907,7 @@ static void i2c_slave_task(void *pv_args)
 
             // Read
             } else if(event.event == I2C_SLAVE_EVT_TX){
-                if(i2c->request_callback){
+                if(i2c->request_callback) {
                     len = event.param;
                     data = (len > 0)?(uint8_t*)malloc(len):NULL;
                     len = i2c_slave_read_rx(i2c, data, len);
@@ -907,19 +926,3 @@ static void i2c_slave_task(void *pv_args)
     }
     vTaskDelete(NULL);
 }
-
-static bool i2cSlaveDetachBus(void * bus_i2c_num){
-    uint8_t num = (int)bus_i2c_num - 1;
-    i2c_slave_struct_t * i2c = &_i2c_bus_array[num];
-    if (i2c->scl == -1 && i2c->sda == -1) {
-        return true;
-    }
-    esp_err_t err = i2cSlaveDeinit(num);
-    if(err != ESP_OK){
-        ESP_LOGE(TAG, "i2cSlaveDeinit failed with error: %d", err);
-        return false;
-    }
-    return true;
-}
-
-#endif /* SOC_I2C_SUPPORT_SLAVE */

@@ -1,4 +1,4 @@
-// Copyright 2015-2021 Espressif Systems (Shanghai) PTE LTD
+// Copyright 2022-2023 Espressif Systems (Shanghai) PTE LTD
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,6 @@
 #pragma once
 
 #include "soc/soc_caps.h"
-#if SOC_I2C_SUPPORT_SLAVE
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,4 +36,3 @@ size_t i2cSlaveWrite(uint8_t num, const uint8_t *buf, uint32_t len, uint32_t tim
 }
 #endif
 
-#endif /* SOC_I2C_SUPPORT_SLAVE */

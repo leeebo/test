@@ -81,15 +81,17 @@ static esp_err_t i2c_master_init(void)
 
 static void i2c_slave_request_cb(uint8_t num, uint8_t *cmd, uint8_t cmd_len, void * arg)
 {
-    if (cmd_len > 0) {
-        ESP_LOGI(TAG, "cmd: %02x ...", cmd[0]);
-    }
+    // please not block or print in this callback function
+    // because the SCL Stretching will be released if time is too long
     i2cSlaveWrite(I2C_SLAVE_NUM, cmd, cmd_len, 0);
 }
 
 static void i2c_slave_receive_cb(uint8_t num, uint8_t * data, size_t len, bool stop, void * arg)
 {
-    ESP_LOG_BUFFER_HEXDUMP(TAG, data, len, ESP_LOG_INFO);
+    ESP_LOGI(TAG, "rcv_len: %d", len);
+    if (len > 0) {
+        ESP_LOGI(TAG, "rcv: %02x ...", data[0]);
+    }
 }
 
 /**
